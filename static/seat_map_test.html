@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Seat Map Test</title>
+<style>
+  body { font-family: system-ui, sans-serif; margin: 0; padding: 16px; background: #f5f6f8; color: #1f2430; }
+  h1 { font-size: 20px; margin: 0 0 12px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  input { padding: 8px; border: 1px solid #c8ccd4; border-radius: 6px; }
+  input.token { flex: 1; min-width: 240px; }
+  button { padding: 8px 14px; border: 0; border-radius: 6px; background: #3454d1; color: #fff; cursor: pointer; }
+  #status { font-size: 13px; margin-bottom: 8px; }
+  .legend span { display: inline-block; margin-right: 12px; font-size: 13px; }
+  .dot { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: middle; margin-right: 4px; }
+  .screen { text-align: center; margin: 12px auto; padding: 4px; background: #d9dce3; border-radius: 4px; max-width: 480px; font-size: 12px; }
+  .row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+  .row .label { width: 28px; font-weight: 600; }
+  .seat { width: 34px; height: 30px; border-radius: 5px; font-size: 11px; display: flex; align-items: center; justify-content: center; cursor: default; border: 1px solid transparent; }
+  .Available { background: #dff5e1; border-color: #7fcf8a; }
+  .Locked { background: #ffe9b8; border-color: #e0b34a; }
+  .Yours { background: #cfe0ff; border-color: #3454d1; font-weight: 700; }
+  .Booked { background: #f3c4c4; border-color: #d27676; }
+  .Unavailable { background: #d4d6db; color: #8a8f99; }
+  #log { margin-top: 16px; background: #fff; border: 1px solid #dfe2e8; border-radius: 6px; padding: 8px; height: 150px; overflow: auto; font: 12px/1.5 monospace; }
+</style>
+</head>
+<body>
+<h1>Live seat map</h1>
+<div class="bar">
+  <input id="show" type="number" min="1" placeholder="Show ID" value="1" style="width:100px">
+  <input id="token" class="token" type="text" placeholder="Paste access token (from POST /auth/login)">
+  <button id="connect">Connect</button>
+  <button id="disconnect" style="background:#6b7280">Disconnect</button>
+</div>
+<div id="status">Not connected</div>
+<div class="legend">
+  <span><i class="dot Available"></i>Available</span><span><i class="dot Locked"></i>Locked</span>
+  <span><i class="dot Yours"></i>Yours</span><span><i class="dot Booked"></i>Booked</span>
+  <span><i class="dot Unavailable"></i>Unavailable</span>
+</div>
+<div class="screen">SCREEN</div>
+<div id="grid"></div>
+<div id="log"></div>
+<script>
+  let ws = null;
+  const seats = new Map(); // seat_id -> {row_label, seat_number, category, price, status}
+  const $ = (id) => document.getElementById(id);
+
+  function log(msg) {
+    const line = document.createElement("div");
+    line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+    $("log").prepend(line);
+  }
+
+  function render() {
+    const rows = {};
+    seats.forEach((s, id) => { (rows[s.row_label] = rows[s.row_label] || []).push({ id, ...s }); });
+    const grid = $("grid");
+    grid.innerHTML = "";
+    Object.keys(rows).sort((a, b) => a.length - b.length || a.localeCompare(b)).forEach((label) => {
+      const row = document.createElement("div");
+      row.className = "row";
+      const l = document.createElement("div");
+      l.className = "label"; l.textContent = label;
+      row.appendChild(l);
+      rows[label].sort((a, b) => a.seat_number - b.seat_number).forEach((s) => {
+        const d = document.createElement("div");
+        d.className = "seat " + s.status;
+        d.textContent = s.seat_number;
+        d.title = `${label}${s.seat_number} - ${s.category} - Rs.${s.price} - ${s.status}`;
+        row.appendChild(d);
+      });
+      grid.appendChild(row);
+    });
+  }
+
+  function connect() {
+    disconnect();
+    const show = $("show").value, token = $("token").value.trim();
+    if (!show || !token) { $("status").textContent = "Enter a show id and token"; return; }
+    const proto = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${proto}://${location.host}/ws/shows/${show}/seats?token=${encodeURIComponent(token)}`);
+    ws.onopen = () => { $("status").textContent = "Connected to show " + show; log("connected"); };
+    ws.onclose = (e) => { $("status").textContent = "Disconnected (code " + e.code + ")"; log("closed, code " + e.code); };
+    ws.onerror = () => log("socket error");
+    ws.onmessage = (ev) => {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === "seat_map") {
+        seats.clear();
+        msg.seats.forEach((s) => seats.set(s.seat_id, s));
+        render();
+        log(`full seat map received (${msg.seats.length} seats)`);
+      } else if (msg.type === "seat_update") {
+        msg.seats.forEach((u) => { const s = seats.get(u.seat_id); if (s) s.status = u.status; });
+        render();
+        log(`${msg.event}: seats ${msg.seats.map((u) => u.seat_id + "=" + u.status).join(", ")}`);
+      } else if (msg.type === "show_cancelled") {
+        log("SHOW CANCELLED: " + msg.message);
+      } else if (msg.type === "notification") {
+        log("notification: " + msg.message);
+      }
+    };
+  }
+  function disconnect() { if (ws) { ws.close(); ws = null; } }
+  $("connect").onclick = connect;
+  $("disconnect").onclick = disconnect;
+</script>
+</body>
+</html>

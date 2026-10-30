@@ -1,0 +1,24 @@
+# Secrets and local config
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+env/
+*.egg-info/
+
+# Generated files
+tickets/*.pdf
+*.sqlite3
+*.db
+exports/
+.coverage
+htmlcov/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

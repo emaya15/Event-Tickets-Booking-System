@@ -1,0 +1,70 @@
+# API + MySQL + Redis.   Start with:  docker compose up --build
+# Copy .env.example to .env first (compose reads secrets from it).
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: ticket_booking
+      MYSQL_USER: ticket_user
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-change-me}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-change-me-root}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # One-off job: applies Alembic migrations, then exits.
+  migrate:
+    build: .
+    env_file: [.env]
+    environment: &app_env
+      DATABASE_URL: mysql+pymysql://ticket_user:${MYSQL_PASSWORD:-change-me}@mysql:3306/ticket_booking
+      REDIS_URL: redis://redis:6379/0
+    command: ["alembic", "upgrade", "head"]
+    depends_on:
+      mysql: {condition: service_healthy}
+    restart: "no"
+
+  api:
+    build: .
+    env_file: [.env]
+    environment:
+      <<: *app_env
+      RUN_SCHEDULER: "false"        # the dedicated scheduler service runs the jobs
+    ports:
+      - "8000:8000"
+    volumes:
+      - tickets_data:/app/tickets
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+  # Exactly one process runs the scheduled jobs (expiry, reminders, completion).
+  scheduler:
+    build: .
+    env_file: [.env]
+    environment: *app_env
+    command: ["python", "-m", "app.jobs.run_scheduler"]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      redis: {condition: service_healthy}
+
+volumes:
+  mysql_data:
+  redis_data:
+  tickets_data:

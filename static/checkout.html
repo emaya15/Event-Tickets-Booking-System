@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Razorpay Test Checkout</title>
+<style>
+  :root { --bg:#f4f6fa; --card:#fff; --ink:#1d2433; --muted:#667085; --line:#d9dee8; --brand:#3354d1; --ok:#18794e; --bad:#b42318; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:24px 16px; background:var(--bg); color:var(--ink); font:15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:560px; margin:0 auto; }
+  h1 { font-size:22px; margin:0 0 4px; }
+  p.sub { margin:0 0 20px; color:var(--muted); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:20px; margin-bottom:16px; }
+  label { display:block; font-weight:600; font-size:13px; margin:12px 0 4px; }
+  label:first-child { margin-top:0; }
+  input { width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font:inherit; }
+  input:focus { outline:2px solid var(--brand); outline-offset:1px; }
+  .hint { font-size:12px; color:var(--muted); margin-top:4px; }
+  .row { display:flex; gap:12px; }
+  .row > div { flex:1; }
+  button { padding:11px 18px; border:0; border-radius:8px; background:var(--brand); color:#fff; font:inherit; font-weight:600; cursor:pointer; }
+  button.secondary { background:#fff; color:var(--brand); border:1px solid var(--brand); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .actions { display:flex; gap:10px; flex-wrap:wrap; margin-top:16px; }
+  #status { padding:12px 14px; border-radius:8px; font-size:14px; display:none; white-space:pre-wrap; word-break:break-word; }
+  #status.show { display:block; }
+  #status.info { background:#eef2ff; color:#2b3a8f; }
+  #status.ok { background:#e8f6ee; color:var(--ok); }
+  #status.err { background:#fdecea; color:var(--bad); }
+  .tips { font-size:13px; color:var(--muted); }
+  .tips code { background:#eef0f4; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Razorpay test checkout</h1>
+  <p class="sub">Pays an order created by <code>POST /bookings/{id}/razorpay-order</code> (test mode only).</p>
+
+  <section class="card">
+    <label for="keyId">Razorpay Key ID</label>
+    <input id="keyId" placeholder="rzp_test_xxxxxxxxxxxxxx" autocomplete="off">
+
+    <label for="orderId">Order ID</label>
+    <input id="orderId" placeholder="order_xxxxxxxxxxxxxx" autocomplete="off">
+
+    <div class="row">
+      <div>
+        <label for="amount">Amount (paise)</label>
+        <input id="amount" type="number" min="100" placeholder="21240">
+        <div class="hint" id="rupees"></div>
+      </div>
+      <div>
+        <label for="bookingId">Booking ID</label>
+        <input id="bookingId" type="number" min="1" placeholder="7">
+      </div>
+    </div>
+
+    <details open style="margin-top:14px">
+      <summary style="cursor:pointer;font-weight:600;font-size:13px">Optional: confirm directly without the webhook</summary>
+      <label for="apiBase">API address</label>
+      <input id="apiBase" value="http://127.0.0.1:8000">
+      <label for="token">Customer access token</label>
+      <input id="token" placeholder="paste the access_token from /auth/login" autocomplete="off">
+      <div class="hint">If the webhook is not set up, this lets the page call <code>/bookings/{id}/razorpay-confirm</code> after payment.</div>
+    </details>
+
+    <div class="actions">
+      <button id="payBtn" type="button">Pay now</button>
+      <button id="confirmBtn" class="secondary" type="button" disabled>Confirm with API</button>
+    </div>
+  </section>
+
+  <div id="status"></div>
+
+  <section class="card tips">
+    <strong>Test payment details</strong><br>
+    Card <code>4111 1111 1111 1111</code>, any future expiry, any CVV, any OTP.<br>
+    UPI <code>success@razorpay</code> succeeds, <code>failure@razorpay</code> fails.
+  </section>
+</main>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+(function () {
+  var $ = function (id) { return document.getElementById(id); };
+  var lastResult = null;
+
+  function show(text, kind) {
+    var el = $("status");
+    el.textContent = text;
+    el.className = "show " + (kind || "info");
+  }
+
+  // Remember the non-secret fields between reloads.
+  ["keyId", "orderId", "amount", "bookingId", "apiBase"].forEach(function (id) {
+    try { var v = localStorage.getItem("rzp_" + id); if (v) $(id).value = v; } catch (e) {}
+    $(id).addEventListener("input", function () {
+      try { localStorage.setItem("rzp_" + id, $(id).value); } catch (e) {}
+      updateRupees();
+    });
+  });
+
+  function updateRupees() {
+    var paise = parseInt($("amount").value, 10);
+    $("rupees").textContent = paise > 0 ? "= Rs. " + (paise / 100).toFixed(2) : "";
+  }
+  updateRupees();
+
+  // Restore the last payment result (a live-reload tool may have refreshed the page).
+  try {
+    var saved = localStorage.getItem("rzp_last");
+    if (saved) {
+      lastResult = JSON.parse(saved);
+      $("confirmBtn").disabled = false;
+      show("Last payment result (restored):\n\n" + JSON.stringify(lastResult, null, 2), "ok");
+    }
+  } catch (e) {}
+
+  $("payBtn").addEventListener("click", function () {
+    try { localStorage.removeItem("rzp_last"); } catch (e) {}
+    var key = $("keyId").value.trim();
+    var order = $("orderId").value.trim();
+    var amount = parseInt($("amount").value, 10);
+
+    if (!key.startsWith("rzp_test_")) { show("Enter your TEST Key ID (it starts with rzp_test_).", "err"); return; }
+    if (!order.startsWith("order_")) { show("Enter the order id from /razorpay-order (it starts with order_).", "err"); return; }
+    if (!(amount >= 100)) { show("Enter the amount in paise exactly as returned by /razorpay-order.", "err"); return; }
+    if (typeof Razorpay === "undefined") { show("Could not load Razorpay Checkout. Check your internet connection.", "err"); return; }
+
+    var rzp = new Razorpay({
+      key: key,
+      order_id: order,
+      amount: amount,
+      currency: "INR",
+      name: "Ticket Booking (test)",
+      description: "Booking " + ($("bookingId").value || ""),
+      theme: { color: "#3354d1" },
+      handler: function (response) {
+        lastResult = response;
+        try { localStorage.setItem("rzp_last", JSON.stringify(response)); } catch (e) {}
+        $("confirmBtn").disabled = false;
+        show("Payment successful.\n\n" + JSON.stringify(response, null, 2) +
+             "\n\nIf the webhook is registered, the booking confirms by itself in a few seconds.\n" +
+             "Check it with GET /bookings/" + ($("bookingId").value || "{id}") + ".", "ok");
+      },
+      modal: { ondismiss: function () { show("Checkout closed without paying.", "info"); } }
+    });
+    rzp.on("payment.failed", function (resp) {
+      var e = resp && resp.error ? resp.error : {};
+      show("Payment failed: " + (e.description || "unknown error") +
+           (e.reason ? "\nReason: " + e.reason : ""), "err");
+    });
+    rzp.open();
+  });
+
+  $("confirmBtn").addEventListener("click", function () {
+    var bookingId = $("bookingId").value.trim();
+    var token = $("token").value.trim();
+    var base = $("apiBase").value.trim().replace(/\/+$/, "");
+    if (!lastResult) { show("Pay first.", "err"); return; }
+    if (!bookingId || !token) { show("Enter the booking id and your access token to confirm.", "err"); return; }
+
+    show("Confirming with the API...", "info");
+    fetch(base + "/bookings/" + encodeURIComponent(bookingId) + "/razorpay-confirm", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "Authorization": "Bearer " + token },
+      body: JSON.stringify({
+        razorpay_order_id: lastResult.razorpay_order_id,
+        razorpay_payment_id: lastResult.razorpay_payment_id,
+        razorpay_signature: lastResult.razorpay_signature
+      })
+    })
+    .then(function (r) { return r.json().then(function (j) { return { ok: r.ok, body: j }; }); })
+    .then(function (res) {
+      show((res.ok ? "API confirmed the payment.\n\n" : "API rejected the request.\n\n") +
+           JSON.stringify(res.body, null, 2), res.ok ? "ok" : "err");
+    })
+    .catch(function (err) {
+      show("Could not reach the API: " + err.message +
+           "\n(If the page is opened from a file, the API must allow it; use the webhook instead.)", "err");
+    });
+  });
+})();
+</script>
+</body>
+</html>
